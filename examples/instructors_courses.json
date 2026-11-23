@@ -1,0 +1,42 @@
+{
+  "project": "config",
+  "apps": [
+    {
+      "name": "instructors",
+      "model": "Instructor",
+      "fields": [
+        {
+          "name": "name",
+          "type": "char",
+          "max_length": 150
+        },
+        {
+          "name": "photo",
+          "type": "image",
+          "upload_to": "instructors/"
+        }
+      ]
+    },
+    {
+      "name": "courses",
+      "model": "Course",
+      "fields": [
+        {
+          "name": "name",
+          "type": "char",
+          "max_length": 150
+        },
+        {
+          "name": "description",
+          "type": "text"
+        },
+        {
+          "name": "instructor",
+          "type": "fk",
+          "to": "instructors.Instructor",
+          "on_delete": "PROTECT"
+        }
+      ]
+    }
+  ]
+}

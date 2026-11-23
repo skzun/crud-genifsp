@@ -1,0 +1,56 @@
+{
+  "project": "config",
+  "apps": [
+    {
+      "name": "students",
+      "model": "Student",
+      "fields": [
+        {
+          "name": "name",
+          "type": "char"
+        },
+        {
+          "name": "email",
+          "type": "email",
+          "unique": true
+        },
+        {
+          "name": "courses",
+          "type": "m2m",
+          "to": "courses.Course"
+        }
+      ]
+    },
+    {
+      "name": "enrollments",
+      "model": "Enrollment",
+      "fields": [
+        {
+          "name": "student",
+          "type": "fk",
+          "to": "students.Student"
+        },
+        {
+          "name": "course",
+          "type": "fk",
+          "to": "courses.Course"
+        },
+        {
+          "name": "start",
+          "type": "date"
+        },
+        {
+          "name": "fee",
+          "type": "decimal",
+          "max_digits": 8,
+          "decimal_places": 2
+        },
+        {
+          "name": "active",
+          "type": "boolean",
+          "default": true
+        }
+      ]
+    }
+  ]
+}

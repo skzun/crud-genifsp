@@ -68,7 +68,8 @@ Modelos existentes continuam disponíveis como alvos de novas relações.
 O projeto deve estar parado durante a geração. Faça backup das personalizações
 antes de acrescentar apps; o registro generated.py e generated_nav.html é gerenciado.
 Migrações são produzidas pelo próprio Django com os comandos acima, inclusive as
-dependências entre os apps. A pasta `demo/` inclui as migrações do caso de teste.
+dependências entre os apps. As migrações do caso de teste foram criadas e aplicadas
+em projetos temporários durante a validação.
 
 ## Desenvolvimento e testes
 
