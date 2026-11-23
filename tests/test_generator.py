@@ -1,3 +1,4 @@
+import ast
 from pathlib import Path
 import subprocess
 import sys
@@ -36,39 +37,68 @@ class GeneratorTests(unittest.TestCase):
                 cwd=out, capture_output=True, text=True,
             )
             self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+            settings_file = out / "setup/settings.py"
+            original_settings = settings_file.read_bytes()
+            settings_file.write_bytes(original_settings.replace(
+                b"'django.contrib.staticfiles',",
+                b"'django.contrib.staticfiles'  # keep the original comment",
+            ))
             baseline = {path: path.read_bytes() for path in out.rglob("*.py")}
-            hooks = {out / "setup/settings.py", out / "setup/urls.py"}
+            registered_files = {settings_file, out / "setup/urls.py"}
             plan = generate(example(), out, dry_run=True)
-            self.assertTrue(hooks.issubset(plan))
+            self.assertTrue(registered_files.issubset(plan))
             self.assertFalse((out / "instructors").exists())
             for path, contents in baseline.items():
                 self.assertEqual(path.read_bytes(), contents)
 
-            # A pre-existing file in a generated directory must survive a failed attempt.
-            blocked_dir = out / "crud_genifsp_templates"
-            blocked_dir.write_text("keep", encoding="utf-8")
-            with self.assertRaises(OSError):
+            blocked_app = out / "courses"
+            blocked_app.write_text("keep", encoding="utf-8")
+            with self.assertRaises(ValueError):
                 generate(example(), out)
-            self.assertEqual(blocked_dir.read_text(encoding="utf-8"), "keep")
-            self.assertFalse((out / "crud_genifsp_static").exists())
+            self.assertEqual(blocked_app.read_text(encoding="utf-8"), "keep")
+            self.assertFalse((out / "instructors").exists())
             self.assertFalse((out / "crud-genifsp.json").exists())
-            blocked_dir.unlink()
+            blocked_app.unlink()
 
             generate(example(), out)
             for path, contents in baseline.items():
-                if path in hooks:
-                    self.assertTrue(path.read_bytes().startswith(contents))
-                    self.assertIn(b".crud_genifsp_registry", path.read_bytes()[len(contents):])
-                else:
+                if path not in registered_files:
                     self.assertEqual(path.read_bytes(), contents)
+            tree = ast.parse(settings_file.read_bytes())
+            assignment = next(node for node in tree.body if isinstance(node, ast.Assign)
+                              and any(isinstance(target, ast.Name) and target.id == "INSTALLED_APPS"
+                                      for target in node.targets))
+            self.assertEqual(ast.literal_eval(assignment.value)[-2:], ["instructors", "courses"])
+            self.assertIn(b"'django.contrib.staticfiles',  # keep the original comment", settings_file.read_bytes())
+            self.assertFalse((out / "setup/crud_genifsp_registry.py").exists())
             self.assertFalse((out / "config").exists())
-            self.assertTrue((out / "instructors/models.py").is_file())
-            self.assertTrue((out / "courses/urls.py").is_file())
-            check = subprocess.run(
+            self.assertTrue((out / "instructors/admin.py").is_file())
+            self.assertTrue((out / "courses/admin.py").is_file())
+            self.assertTrue((out / "courses/templates/courses/update.html").is_file())
+            managed = subprocess.run(
                 [sys.executable, "manage.py", "check"],
                 cwd=out, capture_output=True, text=True,
             )
-            self.assertEqual(check.returncode, 0, check.stdout + check.stderr)
+            self.assertEqual(managed.returncode, 0, managed.stdout + managed.stderr)
+            probe = """
+from django.contrib import admin
+from django.urls import resolve, reverse
+from instructors.models import Instructor
+from courses.models import Course
+
+assert admin.site.is_registered(Instructor)
+assert admin.site.is_registered(Course)
+assert reverse('instructors:instructors') == '/instructors/'
+assert reverse('instructors:details', args=[7]) == '/instructors/details/7'
+assert resolve('/courses/add/addrecord/').func.__name__ == 'addrecord'
+assert reverse('courses:updaterecord', args=[7]) == '/courses/update/updaterecord/7'
+assert reverse('admin:index') == '/admin/'
+"""
+            probed = subprocess.run(
+                [sys.executable, "manage.py", "shell", "-c", probe],
+                cwd=out, capture_output=True, text=True,
+            )
+            self.assertEqual(probed.returncode, 0, probed.stdout + probed.stderr)
             snapshot = {path: path.read_bytes() for path in out.rglob("*.py")}
             with self.assertRaises(ValueError):
                 generate(example(), out)

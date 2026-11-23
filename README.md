@@ -28,41 +28,83 @@ Os detalhes do curso incluem um link para o professor. O CSS é local, sem CDN.
 O comando também está disponível como `crud-genifsp`. Caso o executável não esteja
 no PATH do Windows, use `python -m crud_genifsp`.
 
-## Exercício no projeto da aula 8
+## Passo a passo na aula 8
 
-Descompacte o ZIP da aula e abra o CMD na pasta que contém o `manage.py`.
-Este fluxo precisa da versão 0.1.3 ou posterior do gerador.
+**1. Abra o projeto da prova.** Descompacte o ZIP da aula em uma pasta nova.
+Abra no Explorador a pasta que contém o arquivo `manage.py` e digite `cmd` na
+barra de endereços. Execute `dir manage.py` para confirmar que está no local certo.
+
+**2. Prepare o ambiente.** No CMD, execute os comandos abaixo. A versão 0.1.4
+é a primeira que usa as rotas da aula e registra os apps dentro de `INSTALLED_APPS`.
 
 ```bat
 py -m venv .venv
 .venv\Scripts\activate.bat
-pip install django pillow crud-genifsp
+pip install django pillow crud-genifsp==0.1.4
+pip show crud-genifsp
+```
+
+Se `py -m venv .venv` responder que não encontrou Python, rode `python -m venv .venv`.
+Antes de gerar, confira que o `pip show crud-genifsp` exibe `Version: 0.1.4`.
+
+**3. Gere os apps na pasta atual.** Para o enunciado com instructors e courses,
+use o modelo pronto.
+
+```bat
 crud-genifsp example schema.json
 crud-genifsp generate schema.json --output . --migrate
+py manage.py check
 py manage.py runserver
 ```
 
-O gerador cria `instructors/` e `courses/` ao lado de `members/` e `plans/`.
-Ele acrescenta os registros ao fim de `setup/settings.py` e `setup/urls.py`,
-preservando o conteúdo original. O projeto continua usando o mesmo
-`manage.py`, banco SQLite, mídia e página inicial. A opção `--migrate` cria
-as migrações dos apps novos e aplica as pendentes no banco existente.
+O ponto em `--output .` indica a pasta do projeto original. Com `--migrate`,
+o gerador cria as migrações dos apps novos e aplica as pendentes no mesmo
+SQLite. As duas pastas novas ficam ao lado de `members` e `plans`.
+Confira em `setup/settings.py` as entradas `'instructors'` e `'courses'` dentro
+de `INSTALLED_APPS`. Em `setup/urls.py`, há um `include` para cada app dentro da lista
+`urlpatterns`. Cada app vem com models.py, forms.py, views.py, urls.py,
+admin.py e templates.
 
-Abra http://127.0.0.1:8000/instructors/ e cadastre um instrutor com foto.
-Depois abra http://127.0.0.1:8000/courses/ e selecione o instrutor.
-Para ver quais arquivos serão gerados ou receberão acréscimos antes de
-executar, use `--dry-run` no lugar de `--migrate`.
+**4. Verifique os CRUDs.** Abra a [lista de instrutores](http://127.0.0.1:8000/instructors/)
+e cadastre um instrutor com foto. Em [Cursos](http://127.0.0.1:8000/courses/),
+crie um curso, selecione o instrutor e edite o registro. Confira o vínculo
+na tela de detalhes. A exclusão de um instrutor com cursos é bloqueada.
 
-## Assistente interativo
+| Ação | Exemplo em instructors |
+| --- | --- |
+| Listar | /instructors/ |
+| Ver detalhes | /instructors/details/1 |
+| Abrir cadastro | /instructors/add/ |
+| Salvar cadastro | POST /instructors/add/addrecord/ |
+| Abrir edição | /instructors/update/1 |
+| Salvar edição | POST /instructors/update/updaterecord/1 |
+| Confirmar exclusão | GET /instructors/delete/1, seguido de POST na mesma rota |
 
-Execute `crud-genifsp wizard --migrate` na pasta do `manage.py` para montar o esquema
-e gerar os apps. Informe primeiro os módulos e modelos, depois os campos.
-Use `image` para foto e `file` para outros arquivos. A opção de perfil mostra
-a foto também na lista. Para ligar Curso a Instrutor, use `fk` no campo
-`instructor`, selecione `instructors.Instructor` e mantenha `PROTECT` se
-quiser impedir a exclusão de instrutores com cursos vinculados. Os alvos
-disponíveis são os módulos novos e os já registrados pelo gerador.
-O assistente salva as respostas em `schema.json`.
+Os cursos seguem as mesmas rotas sob /courses/. Para conferir os registros
+no [Django Admin](http://127.0.0.1:8000/admin/), crie um superusuário com
+`py manage.py createsuperuser` em outro CMD com o ambiente ativado.
+
+### Quando o enunciado mudar
+
+No passo 3, troque os comandos `example` e `generate` por `crud-genifsp wizard --migrate`.
+Informe os módulos e modelos antes dos campos. Para reproduzir o exemplo
+interativamente, informe 2 módulos, com as pastas instructors e courses
+e os modelos Instructor e Course. Digite 2 campos para Instructor e 3
+para Course.
+
+| Modelo | Campo | Tipo | Respostas adicionais |
+| --- | --- | --- | --- |
+| Instructor | name | char | Comprimento 150, opcional n |
+| Instructor | photo | image | Pasta instructors/, miniatura s, opcional n |
+| Course | name | char | Comprimento 150, opcional n |
+| Course | description | text | Opcional n |
+| Course | instructor | fk | Alvo instructors.Instructor, exclusão PROTECT, opcional n |
+
+O assistente salva as respostas em schema.json. Para acrescentar outros
+apps depois, execute `crud-genifsp wizard --schema novos.json --migrate`. Escolha como alvo de uma relação
+um modelo novo ou já cadastrado pelo gerador. O gerador preserva os apps
+já existentes. Para conferir esta estrutura em uma cópia gerada com a
+versão 0.1.3, extraia de novo o ZIP e repita a geração com a versão 0.1.4.
 
 ## Adaptar na prova
 
@@ -112,7 +154,7 @@ python -m pip install -e .
 python -m unittest discover -s tests -p "test_*.py" -v
 python -m pip install build
 python -m build
-python -m pip install dist/crud_genifsp-0.1.3-py3-none-any.whl
+python -m pip install dist/crud_genifsp-0.1.4-py3-none-any.whl
 ```
 
 O teste de integração gera um projeto temporário, cria e aplica migrações,

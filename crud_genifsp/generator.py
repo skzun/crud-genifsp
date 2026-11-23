@@ -7,6 +7,9 @@ import keyword
 from pathlib import Path
 import secrets
 
+from .classroom import urls_source, views_source
+from .integration import integration_plan
+
 
 def example():
     return {"project": "config", "apps": [
@@ -127,38 +130,18 @@ def existing_project(output):
     return project
 
 
-INTEGRATION_HOOKS = {
-    "settings.py": """
-
-
-# Apps gerados por crud-genifsp.
-from .crud_genifsp_registry import GENERATED_APPS as _crud_generated_apps
-
-INSTALLED_APPS = [*INSTALLED_APPS, *_crud_generated_apps]
-TEMPLATES[0]["DIRS"] = [*TEMPLATES[0].get("DIRS", []), BASE_DIR / "crud_genifsp_templates"]
-STATICFILES_DIRS = [*globals().get("STATICFILES_DIRS", []), BASE_DIR / "crud_genifsp_static"]
-""",
-    "urls.py": """
-
-
-# Rotas geradas por crud-genifsp.
-from .crud_genifsp_registry import get_urlpatterns as _crud_get_urlpatterns
-
-urlpatterns = [*urlpatterns, *_crud_get_urlpatterns()]
-""",
+CLASSROOM_ROUTES = {
+    "detail": "details",
+    "create": "add",
+    "submit_create": "addrecord",
+    "submit_update": "updaterecord",
 }
 
 
-def integration_plan(output, project):
-    hooks = {}
-    for filename, source in INTEGRATION_HOOKS.items():
-        path = output / project / filename
-        original = path.read_bytes()
-        newline = b"\r\n" if b"\r\n" in original else b"\n"
-        addition = source.encode("ascii").replace(b"\n", newline)
-        ast.parse(original + addition, filename=str(path))
-        hooks[path] = (original, addition)
-    return hooks
+def route_name(app, action, classroom):
+    if classroom:
+        action = app if action == "list" else CLASSROOM_ROUTES.get(action, action)
+    return f"{app}:{action}"
 
 
 def ensure_directory(path, rollback):
@@ -168,13 +151,8 @@ def ensure_directory(path, rollback):
         rollback.callback(path.rmdir)
 
 
-def truncate_file(path, size):
-    with path.open("r+b") as stream:
-        stream.truncate(size)
-
-
 def write_generation(files, hooks, replaceable):
-    """Create source files and append the integration hooks as one batch."""
+    """Create the apps and update project registrations as one batch."""
     with ExitStack() as rollback:
         for path, source in files.items():
             ensure_directory(path.parent, rollback)
@@ -185,12 +163,14 @@ def write_generation(files, hooks, replaceable):
                 with path.open("xb") as stream:
                     rollback.callback(path.unlink)
                     stream.write(source.encode("utf-8"))
-        for path, (original, addition) in hooks.items():
+        for path, (original, updated) in hooks.items():
             with path.open("r+b") as stream:
                 if stream.read() != original:
                     raise ValueError(f"Arquivo alterado durante a geracao: {path}")
-                rollback.callback(truncate_file, path, len(original))
-                stream.write(addition)
+                rollback.callback(path.write_bytes, original)
+                stream.seek(0)
+                stream.write(updated)
+                stream.truncate()
         rollback.pop_all()
 
 
@@ -206,6 +186,7 @@ def generate(schema, output, dry_run=False):
         schema = {**schema, "project": previous["project"]}
     project, apps = validate(schema, previous)
     all_apps = previous.get("apps", []) + apps
+    classroom = integrating or previous.get("layout") == "classroom"
     legacy_templates = (
         bool(previous) and not integrated
         and (output / "templates/base.html").exists()
@@ -214,9 +195,13 @@ def generate(schema, output, dry_run=False):
     base_template = "base.html" if legacy_templates else "crud_genifsp/base.html"
     nav_template = "generated_nav.html" if legacy_templates else "crud_genifsp/generated_nav.html"
     registry_file = output / project / ("crud_genifsp_registry.py" if integrated else "generated.py")
-    template_dir = "crud_genifsp_templates" if integrated else "templates"
+    if classroom:
+        shared_app = all_apps[0]["name"]
+        template_dir = f"{shared_app}/templates"
+    else:
+        template_dir = "crud_genifsp_templates" if integrated else "templates"
     nav_file = output / template_dir / nav_template
-    hooks = integration_plan(output, project) if integrating else {}
+    hooks = integration_plan(output, project, apps) if classroom else {}
     files = {}
 
     def put(path, content):
@@ -260,25 +245,27 @@ if settings.DEBUG:
 
     if not previous:
         base = """{% load static %}<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{% block title %}CRUD{% endblock %}</title><link rel="stylesheet" href="{% static 'crud.css' %}"></head><body><header><nav><a href="{% url 'home' %}">Início</a>{% include 'generated_nav.html' %}</nav></header><main>{% block content %}{% endblock %}</main></body></html>"""
-        if integrated:
+        if classroom:
             base = base.replace("{% url 'home' %}", "/").replace("'crud.css'", "'crud_genifsp/crud.css'")
-            put("crud_genifsp_static/crud_genifsp/crud.css", STYLE)
+            put(f"{shared_app}/static/crud_genifsp/crud.css", STYLE)
         put(f"{template_dir}/crud_genifsp/base.html",
             base.replace("'generated_nav.html'", "'crud_genifsp/generated_nav.html'"))
 
-    app_names = [app["name"] for app in all_apps]
-    routes = "".join(
-        f"        path('{name}/', include('{name}.urls')),\n" for name in app_names
-    )
-    files[registry_file] = (
-        "# Gerenciado por crud-genifsp.\n"
-        "from django.urls import include, path\n\n"
-        f"GENERATED_APPS = {app_names!r}\n\n"
-        "def get_urlpatterns():\n"
-        f"    return [\n{routes}    ]\n"
-    )
-    files[nav_file] = " ".join(
-        f'<a href="{{% url \'{app["name"]}:list\' %}}">{app["model"]}</a>'
+    if not classroom:
+        # Projects created by older versions still import their generated registry.
+        app_names = [app["name"] for app in all_apps]
+        routes = "".join(
+            f"        path('{name}/', include('{name}.urls')),\n" for name in app_names
+        )
+        files[registry_file] = (
+            "# Gerenciado por crud-genifsp.\n"
+            "from django.urls import include, path\n\n"
+            f"GENERATED_APPS = {app_names!r}\n\n"
+            "def get_urlpatterns():\n"
+            f"    return [\n{routes}    ]\n"
+        )
+    files[nav_file] = "\n".join(
+        f"<a href=\"{{% url '{route_name(app['name'], 'list', classroom)}' %}}\">{app['model']}</a>"
         for app in all_apps
     )
     for app in apps:
@@ -288,11 +275,29 @@ if settings.DEBUG:
         fields = app["fields"]
         label = next((f["name"] for f in fields if f["type"] in {"char", "text", "email"}), None)
         put(f"{name}/__init__.py", "")
-        put(f"{name}/apps.py", f"from django.apps import AppConfig\n\nclass {model}Config(AppConfig):\n    default_auto_field = 'django.db.models.BigAutoField'\n    name = {name!r}\n")
+        config_class = name.title().replace("_", "") if classroom else model
+        put(f"{name}/apps.py", (
+            "from django.apps import AppConfig\n\n\n"
+            f"class {config_class}Config(AppConfig):\n"
+            "    default_auto_field = 'django.db.models.BigAutoField'\n"
+            f"    name = {name!r}\n"
+        ))
         put(f"{name}/migrations/__init__.py", "")
         put(f"{name}/models.py", "from django.db import models\n\n\n" + f"class {model}(models.Model):\n" + "\n".join(field_code(f) for f in fields) + f"\n\n    def __str__(self):\n        return str(self.{label})\n".replace(f"self.{label}", f"self.{label}" if label else "self.pk"))
         put(f"{name}/forms.py", f"from django import forms\nfrom .models import {model}\n\nclass {model}Form(forms.ModelForm):\n    class Meta:\n        model = {model}\n        fields = {[f['name'] for f in fields]!r}\n        widgets = {{" + ", ".join(f"{f['name']!r}: forms.DateInput(attrs={{'type': 'date'}})" for f in fields if f['type'] == 'date') + "}\n")
-        put(f"{name}/views.py", f'''from django.db.models.deletion import ProtectedError, RestrictedError
+        display_fields = tuple(f["name"] for f in fields if f["type"] != "m2m") or ("id",)
+        put(f"{name}/admin.py", (
+            "from django.contrib import admin\n"
+            f"from .models import {model}\n\n\n"
+            f"class {model}Admin(admin.ModelAdmin):\n"
+            f"    list_display = {display_fields!r}\n\n\n"
+            f"admin.site.register({model}, {model}Admin)\n"
+        ))
+        if classroom:
+            put(f"{name}/views.py", views_source(name, model))
+            put(f"{name}/urls.py", urls_source(name, model))
+        else:
+            put(f"{name}/views.py", f'''from django.db.models.deletion import ProtectedError, RestrictedError
 from django.urls import reverse_lazy
 from django.views.generic import ListView, DetailView, CreateView, UpdateView, DeleteView
 from .models import {model}
@@ -331,11 +336,15 @@ class {model}Delete(DeleteView):
         except (ProtectedError, RestrictedError):
             return self.render_to_response(self.get_context_data(form=form, error='Este registro possui vínculos. Exclua os registros relacionados primeiro.'), status=409)
 ''')
-        put(f"{name}/urls.py", f"from django.urls import path\nfrom . import views\napp_name = {name!r}\nurlpatterns = [\n" + "".join(f"    path({route!r}, views.{model}{view}.as_view(), name={url!r}),\n" for route, view, url in [("", "List", "list"), ("new/", "Create", "create"), ("<int:pk>/", "Detail", "detail"), ("<int:pk>/edit/", "Update", "update"), ("<int:pk>/delete/", "Delete", "delete")]) + "]\n")
+            put(f"{name}/urls.py", f"from django.urls import path\nfrom . import views\napp_name = {name!r}\nurlpatterns = [\n" + "".join(f"    path({route!r}, views.{model}{view}.as_view(), name={url!r}),\n" for route, view, url in [("", "List", "list"), ("new/", "Create", "create"), ("<int:pk>/", "Detail", "detail"), ("<int:pk>/edit/", "Update", "update"), ("<int:pk>/delete/", "Delete", "delete")]) + "]\n")
         def url(action, obj=""):
-            return "{% url '" + name + ":" + action + "'" + (" " + obj if obj else "") + " %}"
+            route = route_name(name, action, classroom)
+            argument = " " + obj if obj else ""
+            return "{% url '" + route + "'" + argument + " %}"
+
         def page(body):
-            return "{% extends " + repr(base_template) + " %}{% block content %}" + body + "{% endblock %}"
+            return "{% extends " + repr(base_template) + " %}\n\n{% block content %}\n" + body.strip() + "\n{% endblock %}\n"
+
         profiles = []
         for field in fields:
             if field.get("profile"):
@@ -345,24 +354,87 @@ class {model}Delete(DeleteView):
                     "width='48' height='48' src='{{ " + image + ".url }}'> {% endif %}"
                 )
         profile_html = "".join(profiles)
-        put(f"{name}/templates/{name}/list.html", page(f'<h1>{model}</h1><p><a class="button" href="{url("create")}">Novo cadastro</a></p><table><thead><tr><th>Registro</th><th>Ações</th></tr></thead><tbody>{{% for object in object_list %}}<tr><td>{profile_html}{{{{ object }}}}</td><td class="actions"><a href="{url("detail", "object.pk")}">Detalhes</a><a href="{url("update", "object.pk")}">Editar</a><a href="{url("delete", "object.pk")}">Excluir</a></td></tr>{{% empty %}}<tr><td colspan="2">Nenhum registro.</td></tr>{{% endfor %}}</tbody></table>{{% if page_obj.has_previous %}}<a href="?page={{{{ page_obj.previous_page_number }}}}">Anterior</a>{{% endif %}} {{{{ page_obj.number }}}} {{% if page_obj.has_next %}}<a href="?page={{{{ page_obj.next_page_number }}}}">Próxima</a>{{% endif %}}'))
-        details = ""
-        for f in fields:
-            v = "object." + f["name"]
-            val = "{{ " + v + " }}"
-            if f["type"] in {"image", "file"}:
-                val = "{% if " + v + " %}<a href=\"{{ " + v + ".url }}\">Arquivo</a>" + ("<img alt=\"Foto\" src=\"{{ " + v + ".url }}\">" if f["type"] == "image" else "") + "{% endif %}"
-            elif f["type"] == "fk":
-                target = f["to"].split(".")[0]
-                val = "{% if " + v + " %}<a href=\"{% url '" + target + ":detail' " + v + ".pk %}\">" + val + "</a>{% endif %}"
-            elif f["type"] == "m2m":
-                val = "{% for related in " + v + ".all %}{{ related }}{% if not forloop.last %}, {% endif %}{% empty %}—{% endfor %}"
-            details += f"<dt>{f['name']}</dt><dd>{val}</dd>"
-        put(f"{name}/templates/{name}/detail.html", page(f'<h1>{{{{ object }}}}</h1><dl>{details}</dl><a href="{url("update", "object.pk")}">Editar</a> | <a href="{url("list")}">Voltar</a>'))
-        put(f"{name}/templates/{name}/form.html", page(f'<h1>{model}: cadastro</h1><form method="post" enctype="multipart/form-data">{{% csrf_token %}}{{{{ form.as_p }}}}<button type="submit">Salvar</button></form><a href="{url("list")}">Cancelar</a>'))
-        put(f"{name}/templates/{name}/confirm_delete.html", page(f'<h1>Excluir {{{{ object }}}}?</h1>{{% if error %}}<p class="error">{{{{ error }}}}</p>{{% endif %}}<form method="post">{{% csrf_token %}}<button type="submit">Confirmar exclusão</button></form><a href="{url("list")}">Cancelar</a>'))
-    put("crud-genifsp.json", json.dumps({"project": project, "apps": all_apps, "integrated": integrated}, indent=2, ensure_ascii=False))
-    replaceable = {registry_file, nav_file, manifest} if previous else set()
+        directory = f"{name}/templates/{name}"
+        list_file = f"all_{name}.html" if classroom else "list.html"
+        detail_file = "details.html" if classroom else "detail.html"
+        put(f"{directory}/{list_file}", page(f'''<h1>{model}</h1>
+<p><a class="button" href="{url("create")}">Novo cadastro</a></p>
+<table>
+    <thead><tr><th>Registro</th><th>Ações</th></tr></thead>
+    <tbody>
+        {{% for object in object_list %}}
+        <tr>
+            <td>{profile_html}{{{{ object }}}}</td>
+            <td class="actions">
+                <a href="{url("detail", "object.pk")}">Detalhes</a>
+                <a href="{url("update", "object.pk")}">Editar</a>
+                <a href="{url("delete", "object.pk")}">Excluir</a>
+            </td>
+        </tr>
+        {{% empty %}}
+        <tr><td colspan="2">Nenhum registro.</td></tr>
+        {{% endfor %}}
+    </tbody>
+</table>
+{{% if page_obj.has_previous %}}<a href="?page={{{{ page_obj.previous_page_number }}}}">Anterior</a>{{% endif %}}
+{{{{ page_obj.number }}}}
+{{% if page_obj.has_next %}}<a href="?page={{{{ page_obj.next_page_number }}}}">Próxima</a>{{% endif %}}
+'''))
+        details = []
+        for field in fields:
+            value = "object." + field["name"]
+            rendered = "{{ " + value + " }}"
+            kind = field["type"]
+            if kind in {"image", "file"}:
+                file_url = "{{ " + value + ".url }}"
+                rendered = "{% if " + value + " %}" + f'<a href="{file_url}">Arquivo</a>'
+                if kind == "image":
+                    rendered += f'<img alt="Foto" src="{file_url}">'
+                rendered += "{% endif %}"
+            elif kind == "fk":
+                target = field["to"].split(".")[0]
+                detail_route = route_name(target, "detail", classroom)
+                link = "{% url '" + detail_route + "' " + value + ".pk %}"
+                rendered = "{% if " + value + " %}" + f'<a href="{link}">{rendered}</a>' + "{% endif %}"
+            elif kind == "m2m":
+                rendered = "{% for related in " + value + ".all %}{{ related }}{% if not forloop.last %}, {% endif %}{% empty %}-{% endfor %}"
+            details.append(f"    <dt>{field['name']}</dt><dd>{rendered}</dd>")
+        detail_rows = "\n".join(details)
+        put(f"{directory}/{detail_file}", page(f'''<h1>{{{{ object }}}}</h1>
+<dl>
+{detail_rows}
+</dl>
+<p><a href="{url("update", "object.pk")}">Editar</a> | <a href="{url("list")}">Voltar</a></p>
+'''))
+        form_pages = [
+            ("add.html", f"{model}: cadastro", url("submit_create")),
+            ("update.html", f"{model}: edição", url("submit_update", "object.pk")),
+        ] if classroom else [("form.html", f"{model}: cadastro", "")]
+        for filename, title, post_url in form_pages:
+            action = f' action="{post_url}"' if post_url else ""
+            put(f"{directory}/{filename}", page(f'''<h1>{title}</h1>
+<form{action} method="post" enctype="multipart/form-data">
+    {{% csrf_token %}}
+    {{{{ form.as_p }}}}
+    <button type="submit">Salvar</button>
+</form>
+<p><a href="{url("list")}">Cancelar</a></p>
+'''))
+        put(f"{directory}/confirm_delete.html", page(f'''<h1>Excluir {{{{ object }}}}?</h1>
+{{% if error %}}<p class="error">{{{{ error }}}}</p>{{% endif %}}
+<form method="post">
+    {{% csrf_token %}}
+    <button type="submit">Confirmar exclusão</button>
+</form>
+<p><a href="{url("list")}">Cancelar</a></p>
+'''))
+    metadata = {"project": project, "apps": all_apps, "integrated": integrated}
+    if classroom:
+        metadata["layout"] = "classroom"
+    put("crud-genifsp.json", json.dumps(metadata, indent=2, ensure_ascii=False))
+    replaceable = {nav_file, manifest} if previous else set()
+    if previous and not classroom:
+        replaceable.add(registry_file)
     for path in (*files, *hooks):
         if path.is_symlink() or any(parent.is_symlink() for parent in path.parents if parent != output.parent):
             raise ValueError(f"Destino com link simbolico: {path}")
