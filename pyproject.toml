@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "crud-genifsp"
+version = "0.1.0"
+description = "Gerador adaptavel de CRUDs Django com codigo e templates locais"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = ["Django>=4.2,<7", "Pillow>=10"]
+
+[project.scripts]
+crud-genifsp = "crud_genifsp.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["crud_genifsp*"]
