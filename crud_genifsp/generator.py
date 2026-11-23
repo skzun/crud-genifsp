@@ -56,8 +56,10 @@ def validate(schema, previous):
                 raise ValueError(f"Campo duplicado ou reservado: {name}")
             seen.add(name)
             kind = f.get("type")
-            if kind not in TYPES or set(f) - OPTIONS - {"name", "type", "to", "on_delete"}:
+            if kind not in TYPES or set(f) - OPTIONS - {"name", "type", "to", "on_delete", "profile"}:
                 raise ValueError(f"Tipo ou opcao desconhecida no campo {name}")
+            if "profile" in f and (kind != "image" or type(f["profile"]) is not bool):
+                raise ValueError("profile aceita true ou false somente em imagens.")
             if kind in {"fk", "m2m"}:
                 target = f.get("to", "").split(".")
                 if len(target) != 2 or target[0] not in known or target[1] != known[target[0]]["model"]:
@@ -92,7 +94,7 @@ def field_code(f):
     return f"    {f['name']} = models.{TYPES[kind]}({', '.join(args)})"
 
 
-STYLE = """*{box-sizing:border-box}body{font:16px system-ui;background:#f3f5fa;color:#15243a;margin:0}header{background:#15243a;padding:20px;color:white}nav a{color:white;margin-right:20px}main{max-width:1000px;margin:32px auto;padding:28px;background:white;border-radius:12px}a{color:#174eb8}table{width:100%;border-collapse:collapse}td,th{padding:12px;text-align:left;border-bottom:1px solid #ddd}input,textarea,select{display:block;width:100%;padding:10px;margin:8px 0 18px}input[type=checkbox]{width:auto}button,.button{display:inline-block;background:#174eb8;color:white;padding:10px 18px;border:0;border-radius:6px;text-decoration:none}img{max-width:240px;height:auto}.errorlist,.error{color:#b51d32}.actions a{margin-right:12px}@media(max-width:700px){main{margin:12px;padding:16px}table{display:block;overflow:auto}}"""
+STYLE = """*{box-sizing:border-box}body{font:16px system-ui;background:#f3f5fa;color:#15243a;margin:0}header{background:#15243a;padding:20px;color:white}nav a{color:white;margin-right:20px}main{max-width:1000px;margin:32px auto;padding:28px;background:white;border-radius:12px}a{color:#174eb8}table{width:100%;border-collapse:collapse}td,th{padding:12px;text-align:left;border-bottom:1px solid #ddd}input,textarea,select{display:block;width:100%;padding:10px;margin:8px 0 18px}input[type=checkbox]{width:auto}button,.button{display:inline-block;background:#174eb8;color:white;padding:10px 18px;border:0;border-radius:6px;text-decoration:none}img{max-width:240px;height:auto}.crud-profile{width:48px;height:48px;object-fit:cover;border-radius:50%;vertical-align:middle}.errorlist,.error{color:#b51d32}.actions a{margin-right:12px}@media(max-width:700px){main{margin:12px;padding:16px}table{display:block;overflow:auto}}"""
 
 
 def existing_project(output):
@@ -252,7 +254,16 @@ class {model}Delete(DeleteView):
             return "{% url '" + name + ":" + action + "'" + (" " + obj if obj else "") + " %}"
         def page(body):
             return "{% extends " + repr(base_template) + " %}{% block content %}" + body + "{% endblock %}"
-        put(f"{name}/templates/{name}/list.html", page(f'<h1>{model}</h1><p><a class="button" href="{url("create")}">Novo cadastro</a></p><table><thead><tr><th>Registro</th><th>Ações</th></tr></thead><tbody>{{% for object in object_list %}}<tr><td>{{{{ object }}}}</td><td class="actions"><a href="{url("detail", "object.pk")}">Detalhes</a><a href="{url("update", "object.pk")}">Editar</a><a href="{url("delete", "object.pk")}">Excluir</a></td></tr>{{% empty %}}<tr><td colspan="2">Nenhum registro.</td></tr>{{% endfor %}}</tbody></table>{{% if page_obj.has_previous %}}<a href="?page={{{{ page_obj.previous_page_number }}}}">Anterior</a>{{% endif %}} {{{{ page_obj.number }}}} {{% if page_obj.has_next %}}<a href="?page={{{{ page_obj.next_page_number }}}}">Próxima</a>{{% endif %}}'))
+        profiles = []
+        for field in fields:
+            if field.get("profile"):
+                image = "object." + field["name"]
+                profiles.append(
+                    "{% if " + image + " %}<img class='crud-profile' alt='Foto de perfil' "
+                    "width='48' height='48' src='{{ " + image + ".url }}'> {% endif %}"
+                )
+        profile_html = "".join(profiles)
+        put(f"{name}/templates/{name}/list.html", page(f'<h1>{model}</h1><p><a class="button" href="{url("create")}">Novo cadastro</a></p><table><thead><tr><th>Registro</th><th>Ações</th></tr></thead><tbody>{{% for object in object_list %}}<tr><td>{profile_html}{{{{ object }}}}</td><td class="actions"><a href="{url("detail", "object.pk")}">Detalhes</a><a href="{url("update", "object.pk")}">Editar</a><a href="{url("delete", "object.pk")}">Excluir</a></td></tr>{{% empty %}}<tr><td colspan="2">Nenhum registro.</td></tr>{{% endfor %}}</tbody></table>{{% if page_obj.has_previous %}}<a href="?page={{{{ page_obj.previous_page_number }}}}">Anterior</a>{{% endif %}} {{{{ page_obj.number }}}} {{% if page_obj.has_next %}}<a href="?page={{{{ page_obj.next_page_number }}}}">Próxima</a>{{% endif %}}'))
         details = ""
         for f in fields:
             v = "object." + f["name"]

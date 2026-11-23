@@ -47,6 +47,17 @@ e os arquivos enviados da aula são preservados. Abra `/instructors/` e
 `/courses/` no servidor local. Para revisar quais arquivos seriam escritos,
 acrescente `--dry-run` ao comando `generate`.
 
+## Assistente interativo
+
+Execute `crud-genifsp wizard` na pasta do `manage.py` para montar o esquema
+e gerar os apps. Informe primeiro os módulos e modelos, depois os campos.
+Use `image` para foto e `file` para outros arquivos. A opção de perfil mostra
+a foto também na lista. Para ligar Curso a Instrutor, use `fk` no campo
+`instructor`, selecione `instructors.Instructor` e mantenha `PROTECT` se
+quiser impedir a exclusão de instrutores com cursos vinculados. Os alvos
+disponíveis são os módulos novos e os já registrados pelo gerador.
+O assistente salva as respostas em `schema.json`.
+
 ## Adaptar na prova
 
 Edite o JSON antes de gerar. Cada item em `apps` declara `name`, `model` e `fields`.
@@ -97,7 +108,7 @@ python -m pip install -e .
 python -m unittest discover -s tests -p "test_*.py" -v
 python -m pip install build
 python -m build
-python -m pip install dist/crud_genifsp-0.1.1-py3-none-any.whl
+python -m pip install dist/crud_genifsp-0.1.2-py3-none-any.whl
 ```
 
 O teste de integração gera um projeto temporário, cria e aplica migrações,

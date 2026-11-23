@@ -14,8 +14,17 @@ Outros materiais identificados por extração de texto:
 | 285ec43091bb-9c161663eeb04cd8a4337e48f4fdf023.pdf | QuerySets, barra de pesquisa e paginação | Listagem ordenada com paginação; busca não implementada |
 | 018dc9924bb6-21ec1b36227f4a71a4945fa4f44720d6.pdf | Desacoplamento em API e frontend | Contexto adicional; este gerador produz Django com HTML no servidor |
 
-Foram encontrados 11 PDFs na pasta. Esta tabela registra apenas os cinco cujo
-conteúdo foi identificado na consulta inicial. Os PDFs não são redistribuídos.
+Na aula 8, o exemplo concreto é `members.Member` ligado a `plans.Plan`
+por uma ForeignKey. O exercício inverte a perspectiva do cadastro da mesma
+maneira: cada curso escolhe um instrutor no formulário. A lista e os detalhes
+vêm das aulas de CRUD e templates. O PDF de mídia
+`5a17aaa42624-088bc7b715534bf6b4f30f227ec78908.pdf` ensina ImageField,
+FileField, pasta media, miniatura na listagem e link para anexos. Por isso
+o assistente pergunta pelo tipo do campo, pasta de upload, miniatura e
+destino da relação. No exercício, `photo` pode virar foto de perfil na
+lista e imagem nos detalhes. O código da aula usa CASCADE para Member e Plan.
+O assistente permite escolher a regra e sugere PROTECT para bloquear a
+exclusão de um instrutor com cursos, já que o enunciado não fixa essa regra.
 
 O código usa ModelForms e views genéricas do Django para produzir arquivos
 editáveis. A aula de Bootstrap menciona CDN; o gerador usa CSS próprio local,
