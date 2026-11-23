@@ -1,5 +1,6 @@
 """Generate ordinary Django sources from a validated JSON description."""
 import ast
+from contextlib import ExitStack
 import importlib.util
 import json
 import keyword
@@ -11,7 +12,7 @@ def example():
     return {"project": "config", "apps": [
         {"name": "instructors", "model": "Instructor", "fields": [
             {"name": "name", "type": "char", "max_length": 150},
-            {"name": "photo", "type": "image", "upload_to": "instructors/"}]},
+            {"name": "photo", "type": "image", "upload_to": "instructors/", "profile": True}]},
         {"name": "courses", "model": "Course", "fields": [
             {"name": "name", "type": "char", "max_length": 150},
             {"name": "description", "type": "text"},
@@ -126,6 +127,73 @@ def existing_project(output):
     return project
 
 
+INTEGRATION_HOOKS = {
+    "settings.py": """
+
+
+# Apps gerados por crud-genifsp.
+from .crud_genifsp_registry import GENERATED_APPS as _crud_generated_apps
+
+INSTALLED_APPS = [*INSTALLED_APPS, *_crud_generated_apps]
+TEMPLATES[0]["DIRS"] = [*TEMPLATES[0].get("DIRS", []), BASE_DIR / "crud_genifsp_templates"]
+STATICFILES_DIRS = [*globals().get("STATICFILES_DIRS", []), BASE_DIR / "crud_genifsp_static"]
+""",
+    "urls.py": """
+
+
+# Rotas geradas por crud-genifsp.
+from .crud_genifsp_registry import get_urlpatterns as _crud_get_urlpatterns
+
+urlpatterns = [*urlpatterns, *_crud_get_urlpatterns()]
+""",
+}
+
+
+def integration_plan(output, project):
+    hooks = {}
+    for filename, source in INTEGRATION_HOOKS.items():
+        path = output / project / filename
+        original = path.read_bytes()
+        newline = b"\r\n" if b"\r\n" in original else b"\n"
+        addition = source.encode("ascii").replace(b"\n", newline)
+        ast.parse(original + addition, filename=str(path))
+        hooks[path] = (original, addition)
+    return hooks
+
+
+def ensure_directory(path, rollback):
+    if not path.is_dir():
+        ensure_directory(path.parent, rollback)
+        path.mkdir()
+        rollback.callback(path.rmdir)
+
+
+def truncate_file(path, size):
+    with path.open("r+b") as stream:
+        stream.truncate(size)
+
+
+def write_generation(files, hooks, replaceable):
+    """Create source files and append the integration hooks as one batch."""
+    with ExitStack() as rollback:
+        for path, source in files.items():
+            ensure_directory(path.parent, rollback)
+            if path in replaceable and path.is_file():
+                rollback.callback(path.write_bytes, path.read_bytes())
+                path.write_bytes(source.encode("utf-8"))
+            else:
+                with path.open("xb") as stream:
+                    rollback.callback(path.unlink)
+                    stream.write(source.encode("utf-8"))
+        for path, (original, addition) in hooks.items():
+            with path.open("r+b") as stream:
+                if stream.read() != original:
+                    raise ValueError(f"Arquivo alterado durante a geracao: {path}")
+                rollback.callback(truncate_file, path, len(original))
+                stream.write(addition)
+        rollback.pop_all()
+
+
 def generate(schema, output, dry_run=False):
     output = Path(output).resolve()
     manifest = output / "crud-genifsp.json"
@@ -138,10 +206,19 @@ def generate(schema, output, dry_run=False):
         schema = {**schema, "project": previous["project"]}
     project, apps = validate(schema, previous)
     all_apps = previous.get("apps", []) + apps
-    legacy_templates = bool(previous) and not integrated and (output / "templates/base.html").exists() and not (output / "templates/crud_genifsp/base.html").exists()
+    legacy_templates = (
+        bool(previous) and not integrated
+        and (output / "templates/base.html").exists()
+        and not (output / "templates/crud_genifsp/base.html").exists()
+    )
     base_template = "base.html" if legacy_templates else "crud_genifsp/base.html"
     nav_template = "generated_nav.html" if legacy_templates else "crud_genifsp/generated_nav.html"
+    registry_file = output / project / ("crud_genifsp_registry.py" if integrated else "generated.py")
+    template_dir = "crud_genifsp_templates" if integrated else "templates"
+    nav_file = output / template_dir / nav_template
+    hooks = integration_plan(output, project) if integrating else {}
     files = {}
+
     def put(path, content):
         files[output / path] = content
     if not previous and not integrating:
@@ -184,21 +261,26 @@ if settings.DEBUG:
     if not previous:
         base = """{% load static %}<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{% block title %}CRUD{% endblock %}</title><link rel="stylesheet" href="{% static 'crud.css' %}"></head><body><header><nav><a href="{% url 'home' %}">Início</a>{% include 'generated_nav.html' %}</nav></header><main>{% block content %}{% endblock %}</main></body></html>"""
         if integrated:
-            base = base.replace("{% url 'home' %}", "/")
-            settings_path = f"{project}/settings.py"
-            urls_path = f"{project}/urls.py"
-            for relative, hook in (
-                (settings_path, "\n\n# crud-genifsp\nfrom .crud_genifsp_registry import GENERATED_APPS\nINSTALLED_APPS = [*INSTALLED_APPS, *GENERATED_APPS]\nTEMPLATES[0]['DIRS'] = [*TEMPLATES[0].get('DIRS', []), BASE_DIR / 'crud_genifsp_templates']\nSTATICFILES_DIRS = [*globals().get('STATICFILES_DIRS', []), BASE_DIR / 'crud_genifsp_static']\n"),
-                (urls_path, "\n\n# crud-genifsp\nfrom .crud_genifsp_registry import get_urlpatterns\nurlpatterns = [*get_urlpatterns(), *urlpatterns]\n"),
-            ):
-                put(relative, (output / relative).read_text(encoding="utf-8-sig") + hook)
+            base = base.replace("{% url 'home' %}", "/").replace("'crud.css'", "'crud_genifsp/crud.css'")
             put("crud_genifsp_static/crud_genifsp/crud.css", STYLE)
-        put(("crud_genifsp_templates/" if integrated else "templates/") + "crud_genifsp/base.html",
-            base.replace("'generated_nav.html'", "'crud_genifsp/generated_nav.html'")
-                .replace("'crud.css'", "'crud_genifsp/crud.css'") if integrated else
+        put(f"{template_dir}/crud_genifsp/base.html",
             base.replace("'generated_nav.html'", "'crud_genifsp/generated_nav.html'"))
-    put(f"{project}/" + ("crud_genifsp_registry.py" if integrated else "generated.py"), "# Gerenciado por crud-genifsp. Personalize settings.py e urls.py livremente.\nfrom django.urls import include, path\nGENERATED_APPS = " + repr([a["name"] for a in all_apps]) + "\ndef get_urlpatterns():\n    return [\n" + "".join(f"        path('{a['name']}/', include('{a['name']}.urls')),\n" for a in all_apps) + "]\n")
-    put(("crud_genifsp_templates/" if integrated else "templates/") + nav_template, " ".join(f'<a href="{{% url \'{a["name"]}:list\' %}}">{a["model"]}</a>' for a in all_apps))
+
+    app_names = [app["name"] for app in all_apps]
+    routes = "".join(
+        f"        path('{name}/', include('{name}.urls')),\n" for name in app_names
+    )
+    files[registry_file] = (
+        "# Gerenciado por crud-genifsp.\n"
+        "from django.urls import include, path\n\n"
+        f"GENERATED_APPS = {app_names!r}\n\n"
+        "def get_urlpatterns():\n"
+        f"    return [\n{routes}    ]\n"
+    )
+    files[nav_file] = " ".join(
+        f'<a href="{{% url \'{app["name"]}:list\' %}}">{app["model"]}</a>'
+        for app in all_apps
+    )
     for app in apps:
         name, model = app["name"], app["model"]
         if (output / name).exists():
@@ -280,18 +362,15 @@ class {model}Delete(DeleteView):
         put(f"{name}/templates/{name}/form.html", page(f'<h1>{model}: cadastro</h1><form method="post" enctype="multipart/form-data">{{% csrf_token %}}{{{{ form.as_p }}}}<button type="submit">Salvar</button></form><a href="{url("list")}">Cancelar</a>'))
         put(f"{name}/templates/{name}/confirm_delete.html", page(f'<h1>Excluir {{{{ object }}}}?</h1>{{% if error %}}<p class="error">{{{{ error }}}}</p>{{% endif %}}<form method="post">{{% csrf_token %}}<button type="submit">Confirmar exclusão</button></form><a href="{url("list")}">Cancelar</a>'))
     put("crud-genifsp.json", json.dumps({"project": project, "apps": all_apps, "integrated": integrated}, indent=2, ensure_ascii=False))
-    if integrating:
-        allowed = {output / project / "settings.py", output / project / "urls.py"}
-        collisions = [path for path in files if path.exists() and path not in allowed]
-        if collisions:
-            raise ValueError(f"Arquivo existente seria sobrescrito: {collisions[0]}")
-    for path, source in files.items():
-        if path.suffix == ".py":
-            ast.parse(source, filename=str(path))
+    replaceable = {registry_file, nav_file, manifest} if previous else set()
+    for path in (*files, *hooks):
         if path.is_symlink() or any(parent.is_symlink() for parent in path.parents if parent != output.parent):
             raise ValueError(f"Destino com link simbolico: {path}")
+        if path in files:
+            if path.exists() and (path not in replaceable or not path.is_file()):
+                raise ValueError(f"Arquivo existente seria sobrescrito: {path}")
+            if path.suffix == ".py":
+                ast.parse(files[path], filename=str(path))
     if not dry_run:
-        for path, source in files.items():
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(source, encoding="utf-8")
-    return list(files)
+        write_generation(files, hooks, replaceable)
+    return [*files, *hooks]

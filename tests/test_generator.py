@@ -1,6 +1,3 @@
-import copy
-import json
-import os
 from pathlib import Path
 import subprocess
 import sys
@@ -30,6 +27,53 @@ class GeneratorTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 generate(example(), out)
             self.assertEqual((out / 'mine.txt').read_text(), 'keep')
+
+    def test_integrates_into_existing_project_without_replacing_sources(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            started = subprocess.run(
+                [sys.executable, "-m", "django", "startproject", "setup", "."],
+                cwd=out, capture_output=True, text=True,
+            )
+            self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+            baseline = {path: path.read_bytes() for path in out.rglob("*.py")}
+            hooks = {out / "setup/settings.py", out / "setup/urls.py"}
+            plan = generate(example(), out, dry_run=True)
+            self.assertTrue(hooks.issubset(plan))
+            self.assertFalse((out / "instructors").exists())
+            for path, contents in baseline.items():
+                self.assertEqual(path.read_bytes(), contents)
+
+            # A pre-existing file in a generated directory must survive a failed attempt.
+            blocked_dir = out / "crud_genifsp_templates"
+            blocked_dir.write_text("keep", encoding="utf-8")
+            with self.assertRaises(OSError):
+                generate(example(), out)
+            self.assertEqual(blocked_dir.read_text(encoding="utf-8"), "keep")
+            self.assertFalse((out / "crud_genifsp_static").exists())
+            self.assertFalse((out / "crud-genifsp.json").exists())
+            blocked_dir.unlink()
+
+            generate(example(), out)
+            for path, contents in baseline.items():
+                if path in hooks:
+                    self.assertTrue(path.read_bytes().startswith(contents))
+                    self.assertIn(b".crud_genifsp_registry", path.read_bytes()[len(contents):])
+                else:
+                    self.assertEqual(path.read_bytes(), contents)
+            self.assertFalse((out / "config").exists())
+            self.assertTrue((out / "instructors/models.py").is_file())
+            self.assertTrue((out / "courses/urls.py").is_file())
+            check = subprocess.run(
+                [sys.executable, "manage.py", "check"],
+                cwd=out, capture_output=True, text=True,
+            )
+            self.assertEqual(check.returncode, 0, check.stdout + check.stderr)
+            snapshot = {path: path.read_bytes() for path in out.rglob("*.py")}
+            with self.assertRaises(ValueError):
+                generate(example(), out)
+            for path, contents in snapshot.items():
+                self.assertEqual(path.read_bytes(), contents)
 
     def test_installed_package_full_crud_and_extension(self):
         with tempfile.TemporaryDirectory() as tmp:

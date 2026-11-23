@@ -30,26 +30,32 @@ no PATH do Windows, use `python -m crud_genifsp`.
 
 ## Exercício no projeto da aula 8
 
-A partir da pasta que contém o `manage.py` da aula, execute:
+Descompacte o ZIP da aula e abra o CMD na pasta que contém o `manage.py`.
+Este fluxo precisa da versão 0.1.3 ou posterior do gerador.
 
-```powershell
-python -m pip install pillow crud-genifsp
+```bat
+py -m venv .venv
+.venv\Scripts\activate.bat
+pip install django pillow crud-genifsp
 crud-genifsp example schema.json
-crud-genifsp generate schema.json --output .
-python manage.py makemigrations
-python manage.py migrate
-python manage.py runserver
+crud-genifsp generate schema.json --output . --migrate
+py manage.py runserver
 ```
 
-O gerador detecta `setup.settings` e registra os novos apps e URLs
-automaticamente. O código de `members` e `plans`, a página inicial, o banco
-e os arquivos enviados da aula são preservados. Abra `/instructors/` e
-`/courses/` no servidor local. Para revisar quais arquivos seriam escritos,
-acrescente `--dry-run` ao comando `generate`.
+O gerador cria `instructors/` e `courses/` ao lado de `members/` e `plans/`.
+Ele acrescenta os registros ao fim de `setup/settings.py` e `setup/urls.py`,
+preservando o conteúdo original. O projeto continua usando o mesmo
+`manage.py`, banco SQLite, mídia e página inicial. A opção `--migrate` cria
+as migrações dos apps novos e aplica as pendentes no banco existente.
+
+Abra http://127.0.0.1:8000/instructors/ e cadastre um instrutor com foto.
+Depois abra http://127.0.0.1:8000/courses/ e selecione o instrutor.
+Para ver quais arquivos serão gerados ou receberão acréscimos antes de
+executar, use `--dry-run` no lugar de `--migrate`.
 
 ## Assistente interativo
 
-Execute `crud-genifsp wizard` na pasta do `manage.py` para montar o esquema
+Execute `crud-genifsp wizard --migrate` na pasta do `manage.py` para montar o esquema
 e gerar os apps. Informe primeiro os módulos e modelos, depois os campos.
 Use `image` para foto e `file` para outros arquivos. A opção de perfil mostra
 a foto também na lista. Para ligar Curso a Instrutor, use `fk` no campo
@@ -95,11 +101,9 @@ recusa sobrescrever um app já existente. Para mudar campos de um
 app existente, edite seu models.py, forms.py e templates e rode as migrações.
 Modelos existentes continuam disponíveis como alvos de novas relações.
 
-O projeto deve estar parado durante a geração. Faça backup das personalizações
-antes de acrescentar apps; o registro generated.py e generated_nav.html é gerenciado.
-Migrações são produzidas pelo próprio Django com os comandos acima, inclusive as
-dependências entre os apps. As migrações do caso de teste foram criadas e aplicadas
-em projetos temporários durante a validação.
+Pare o servidor durante a geração. O manifesto, o registro de apps e o menu
+gerado são mantidos pelo gerador. Se você omitir `--migrate`, rode
+`python manage.py makemigrations` e `python manage.py migrate` antes de abrir as páginas.
 
 ## Desenvolvimento e testes
 
@@ -108,7 +112,7 @@ python -m pip install -e .
 python -m unittest discover -s tests -p "test_*.py" -v
 python -m pip install build
 python -m build
-python -m pip install dist/crud_genifsp-0.1.2-py3-none-any.whl
+python -m pip install dist/crud_genifsp-0.1.3-py3-none-any.whl
 ```
 
 O teste de integração gera um projeto temporário, cria e aplica migrações,

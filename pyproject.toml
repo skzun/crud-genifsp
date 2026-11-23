@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "crud-genifsp"
-version = "0.1.2"
+version = "0.1.3"
 description = "Gerador adaptavel de CRUDs Django com codigo e templates locais"
 readme = "README.md"
 requires-python = ">=3.10"
