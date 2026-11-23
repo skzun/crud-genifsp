@@ -95,18 +95,54 @@ def field_code(f):
 STYLE = """*{box-sizing:border-box}body{font:16px system-ui;background:#f3f5fa;color:#15243a;margin:0}header{background:#15243a;padding:20px;color:white}nav a{color:white;margin-right:20px}main{max-width:1000px;margin:32px auto;padding:28px;background:white;border-radius:12px}a{color:#174eb8}table{width:100%;border-collapse:collapse}td,th{padding:12px;text-align:left;border-bottom:1px solid #ddd}input,textarea,select{display:block;width:100%;padding:10px;margin:8px 0 18px}input[type=checkbox]{width:auto}button,.button{display:inline-block;background:#174eb8;color:white;padding:10px 18px;border:0;border-radius:6px;text-decoration:none}img{max-width:240px;height:auto}.errorlist,.error{color:#b51d32}.actions a{margin-right:12px}@media(max-width:700px){main{margin:12px;padding:16px}table{display:block;overflow:auto}}"""
 
 
+def existing_project(output):
+    """Recognize the standard startproject layout used in the class."""
+    manage = output / "manage.py"
+    if not manage.is_file():
+        raise ValueError("Destino nao vazio e sem manage.py de um projeto Django.")
+    modules = {
+        node.args[1].value
+        for node in ast.walk(ast.parse(manage.read_text(encoding="utf-8-sig")))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "setdefault"
+        and len(node.args) == 2
+        and isinstance(node.args[0], ast.Constant)
+        and node.args[0].value == "DJANGO_SETTINGS_MODULE"
+        and isinstance(node.args[1], ast.Constant)
+        and isinstance(node.args[1].value, str)
+    }
+    if len(modules) != 1:
+        raise ValueError("Nao foi possivel detectar o DJANGO_SETTINGS_MODULE.")
+    project, sep, module = modules.pop().partition(".")
+    if not sep or module != "settings":
+        raise ValueError("Esperado o layout Django <projeto>.settings.")
+    identifier(project)
+    for filename in ("settings.py", "urls.py"):
+        if not (output / project / filename).is_file():
+            raise ValueError(f"Arquivo de integracao nao encontrado: {project}/{filename}")
+    return project
+
+
 def generate(schema, output, dry_run=False):
     output = Path(output).resolve()
     manifest = output / "crud-genifsp.json"
     previous = json.loads(manifest.read_text(encoding="utf-8")) if manifest.exists() else {}
+    integrating = not previous and output.exists() and any(output.iterdir())
+    if integrating:
+        schema = {**schema, "project": existing_project(output)}
+    integrated = integrating or previous.get("integrated", False)
+    if integrated and previous:
+        schema = {**schema, "project": previous["project"]}
     project, apps = validate(schema, previous)
     all_apps = previous.get("apps", []) + apps
+    legacy_templates = bool(previous) and not integrated and (output / "templates/base.html").exists() and not (output / "templates/crud_genifsp/base.html").exists()
+    base_template = "base.html" if legacy_templates else "crud_genifsp/base.html"
+    nav_template = "generated_nav.html" if legacy_templates else "crud_genifsp/generated_nav.html"
     files = {}
     def put(path, content):
         files[output / path] = content
-    if not previous:
-        if output.exists() and any(output.iterdir()):
-            raise ValueError("Destino nao vazio sem manifesto crud-genifsp.json; nenhum arquivo foi alterado.")
+    if not previous and not integrating:
         put("manage.py", f"import os, sys\nos.environ.setdefault('DJANGO_SETTINGS_MODULE', '{project}.settings')\nfrom django.core.management import execute_from_command_line\nexecute_from_command_line(sys.argv)\n")
         put(f"{project}/__init__.py", "")
         put(f"{project}/settings.py", f'''from pathlib import Path
@@ -140,11 +176,27 @@ if settings.DEBUG:
     urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
 ''')
         put("static/crud.css", STYLE)
-        put("templates/base.html", """{% load static %}<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{% block title %}CRUD{% endblock %}</title><link rel="stylesheet" href="{% static 'crud.css' %}"></head><body><header><nav><a href="{% url 'home' %}">Início</a>{% include 'generated_nav.html' %}</nav></header><main>{% block content %}{% endblock %}</main></body></html>""")
-        put("templates/home.html", "{% extends 'base.html' %}{% block content %}<h1>Cadastro acadêmico</h1><p>Selecione um módulo no menu para listar, cadastrar, consultar, editar ou excluir.</p>{% endblock %}")
+        put("templates/home.html", "{% extends 'crud_genifsp/base.html' %}{% block content %}<h1>Cadastro acadêmico</h1><p>Selecione um módulo no menu para listar, cadastrar, consultar, editar ou excluir.</p>{% endblock %}")
         put("requirements.txt", "Django>=4.2,<7\nPillow>=10\n")
-    put(f"{project}/generated.py", "# Gerenciado por crud-genifsp. Personalize settings.py e urls.py livremente.\nfrom django.urls import include, path\nGENERATED_APPS = " + repr([a["name"] for a in all_apps]) + "\ndef get_urlpatterns():\n    return [\n" + "".join(f"        path('{a['name']}/', include('{a['name']}.urls')),\n" for a in all_apps) + "]\n")
-    put("templates/generated_nav.html", " ".join(f'<a href="{{% url \'{a["name"]}:list\' %}}">{a["model"]}</a>' for a in all_apps))
+
+    if not previous:
+        base = """{% load static %}<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{% block title %}CRUD{% endblock %}</title><link rel="stylesheet" href="{% static 'crud.css' %}"></head><body><header><nav><a href="{% url 'home' %}">Início</a>{% include 'generated_nav.html' %}</nav></header><main>{% block content %}{% endblock %}</main></body></html>"""
+        if integrated:
+            base = base.replace("{% url 'home' %}", "/")
+            settings_path = f"{project}/settings.py"
+            urls_path = f"{project}/urls.py"
+            for relative, hook in (
+                (settings_path, "\n\n# crud-genifsp\nfrom .crud_genifsp_registry import GENERATED_APPS\nINSTALLED_APPS = [*INSTALLED_APPS, *GENERATED_APPS]\nTEMPLATES[0]['DIRS'] = [*TEMPLATES[0].get('DIRS', []), BASE_DIR / 'crud_genifsp_templates']\nSTATICFILES_DIRS = [*globals().get('STATICFILES_DIRS', []), BASE_DIR / 'crud_genifsp_static']\n"),
+                (urls_path, "\n\n# crud-genifsp\nfrom .crud_genifsp_registry import get_urlpatterns\nurlpatterns = [*get_urlpatterns(), *urlpatterns]\n"),
+            ):
+                put(relative, (output / relative).read_text(encoding="utf-8-sig") + hook)
+            put("crud_genifsp_static/crud_genifsp/crud.css", STYLE)
+        put(("crud_genifsp_templates/" if integrated else "templates/") + "crud_genifsp/base.html",
+            base.replace("'generated_nav.html'", "'crud_genifsp/generated_nav.html'")
+                .replace("'crud.css'", "'crud_genifsp/crud.css'") if integrated else
+            base.replace("'generated_nav.html'", "'crud_genifsp/generated_nav.html'"))
+    put(f"{project}/" + ("crud_genifsp_registry.py" if integrated else "generated.py"), "# Gerenciado por crud-genifsp. Personalize settings.py e urls.py livremente.\nfrom django.urls import include, path\nGENERATED_APPS = " + repr([a["name"] for a in all_apps]) + "\ndef get_urlpatterns():\n    return [\n" + "".join(f"        path('{a['name']}/', include('{a['name']}.urls')),\n" for a in all_apps) + "]\n")
+    put(("crud_genifsp_templates/" if integrated else "templates/") + nav_template, " ".join(f'<a href="{{% url \'{a["name"]}:list\' %}}">{a["model"]}</a>' for a in all_apps))
     for app in apps:
         name, model = app["name"], app["model"]
         if (output / name).exists():
@@ -199,7 +251,7 @@ class {model}Delete(DeleteView):
         def url(action, obj=""):
             return "{% url '" + name + ":" + action + "'" + (" " + obj if obj else "") + " %}"
         def page(body):
-            return "{% extends 'base.html' %}{% block content %}" + body + "{% endblock %}"
+            return "{% extends " + repr(base_template) + " %}{% block content %}" + body + "{% endblock %}"
         put(f"{name}/templates/{name}/list.html", page(f'<h1>{model}</h1><p><a class="button" href="{url("create")}">Novo cadastro</a></p><table><thead><tr><th>Registro</th><th>Ações</th></tr></thead><tbody>{{% for object in object_list %}}<tr><td>{{{{ object }}}}</td><td class="actions"><a href="{url("detail", "object.pk")}">Detalhes</a><a href="{url("update", "object.pk")}">Editar</a><a href="{url("delete", "object.pk")}">Excluir</a></td></tr>{{% empty %}}<tr><td colspan="2">Nenhum registro.</td></tr>{{% endfor %}}</tbody></table>{{% if page_obj.has_previous %}}<a href="?page={{{{ page_obj.previous_page_number }}}}">Anterior</a>{{% endif %}} {{{{ page_obj.number }}}} {{% if page_obj.has_next %}}<a href="?page={{{{ page_obj.next_page_number }}}}">Próxima</a>{{% endif %}}'))
         details = ""
         for f in fields:
@@ -216,7 +268,12 @@ class {model}Delete(DeleteView):
         put(f"{name}/templates/{name}/detail.html", page(f'<h1>{{{{ object }}}}</h1><dl>{details}</dl><a href="{url("update", "object.pk")}">Editar</a> | <a href="{url("list")}">Voltar</a>'))
         put(f"{name}/templates/{name}/form.html", page(f'<h1>{model}: cadastro</h1><form method="post" enctype="multipart/form-data">{{% csrf_token %}}{{{{ form.as_p }}}}<button type="submit">Salvar</button></form><a href="{url("list")}">Cancelar</a>'))
         put(f"{name}/templates/{name}/confirm_delete.html", page(f'<h1>Excluir {{{{ object }}}}?</h1>{{% if error %}}<p class="error">{{{{ error }}}}</p>{{% endif %}}<form method="post">{{% csrf_token %}}<button type="submit">Confirmar exclusão</button></form><a href="{url("list")}">Cancelar</a>'))
-    put("crud-genifsp.json", json.dumps({"project": project, "apps": all_apps}, indent=2, ensure_ascii=False))
+    put("crud-genifsp.json", json.dumps({"project": project, "apps": all_apps, "integrated": integrated}, indent=2, ensure_ascii=False))
+    if integrating:
+        allowed = {output / project / "settings.py", output / project / "urls.py"}
+        collisions = [path for path in files if path.exists() and path not in allowed]
+        if collisions:
+            raise ValueError(f"Arquivo existente seria sobrescrito: {collisions[0]}")
     for path, source in files.items():
         if path.suffix == ".py":
             ast.parse(source, filename=str(path))

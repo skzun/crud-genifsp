@@ -28,6 +28,25 @@ Os detalhes do curso incluem um link para o professor. O CSS é local, sem CDN.
 O comando também está disponível como `crud-genifsp`. Caso o executável não esteja
 no PATH do Windows, use `python -m crud_genifsp`.
 
+## Exercício no projeto da aula 8
+
+A partir da pasta que contém o `manage.py` da aula, execute:
+
+```powershell
+python -m pip install pillow crud-genifsp
+crud-genifsp example schema.json
+crud-genifsp generate schema.json --output .
+python manage.py makemigrations
+python manage.py migrate
+python manage.py runserver
+```
+
+O gerador detecta `setup.settings` e registra os novos apps e URLs
+automaticamente. O código de `members` e `plans`, a página inicial, o banco
+e os arquivos enviados da aula são preservados. Abra `/instructors/` e
+`/courses/` no servidor local. Para revisar quais arquivos seriam escritos,
+acrescente `--dry-run` ao comando `generate`.
+
 ## Adaptar na prova
 
 Edite o JSON antes de gerar. Cada item em `apps` declara `name`, `model` e `fields`.
@@ -60,8 +79,8 @@ python manage.py migrate
 
 Esse exemplo adiciona students e enrollments relacionados a courses. Apps antigos
 e seus models, views e templates permanecem intactos. O gerador atualiza apenas
-o manifesto, a navegação gerada e o registro de apps/URLs. Não altera um projeto
-Django arbitrário nem sobrescreve um app já existente. Para mudar campos de um
+o manifesto, a navegação gerada e o registro de apps/URLs. Aceita a integração automática em projetos no layout padrão do Django e
+recusa sobrescrever um app já existente. Para mudar campos de um
 app existente, edite seu models.py, forms.py e templates e rode as migrações.
 Modelos existentes continuam disponíveis como alvos de novas relações.
 
@@ -78,7 +97,7 @@ python -m pip install -e .
 python -m unittest discover -s tests -p "test_*.py" -v
 python -m pip install build
 python -m build
-python -m pip install dist/crud_genifsp-0.1.0-py3-none-any.whl
+python -m pip install dist/crud_genifsp-0.1.1-py3-none-any.whl
 ```
 
 O teste de integração gera um projeto temporário, cria e aplica migrações,
