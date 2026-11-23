@@ -1,14 +1,13 @@
 """Generate ordinary Django sources from a validated JSON description."""
 import ast
 from contextlib import ExitStack
-import importlib.util
 import json
-import keyword
 from pathlib import Path
 import secrets
 
 from .classroom import urls_source, views_source
-from .integration import integration_plan
+from .integration import integration_plan, local_model_targets
+from .schema import MODEL_OPTIONS, TYPES, identifier, validate
 
 
 def example():
@@ -22,69 +21,9 @@ def example():
             {"name": "instructor", "type": "fk", "to": "instructors.Instructor", "on_delete": "PROTECT"}]}]}
 
 
-TYPES = {"char": "CharField", "text": "TextField", "image": "ImageField", "file": "FileField",
-         "integer": "IntegerField", "positive_integer": "PositiveIntegerField", "decimal": "DecimalField",
-         "float": "FloatField", "boolean": "BooleanField", "date": "DateField", "datetime": "DateTimeField",
-         "email": "EmailField", "url": "URLField", "fk": "ForeignKey", "m2m": "ManyToManyField"}
-OPTIONS = {"max_length", "blank", "null", "default", "unique", "upload_to", "max_digits", "decimal_places", "choices", "verbose_name", "help_text", "related_name"}
-
-
-def identifier(value):
-    if not isinstance(value, str) or not value.isidentifier() or keyword.iskeyword(value) or value.startswith("_"):
-        raise ValueError(f"Identificador invalido: {value!r}")
-    return value
-
-
-def validate(schema, previous):
-    project = identifier(schema.get("project", "config"))
-    if previous and project != previous["project"]:
-        raise ValueError("O projeto deve manter o mesmo nome.")
-    apps = schema.get("apps")
-    if not isinstance(apps, list) or not apps:
-        raise ValueError("apps deve ser uma lista nao vazia.")
-    known = {a["name"]: a for a in previous.get("apps", [])}
-    for app in apps:
-        name, model = identifier(app["name"]), identifier(app["model"])
-        if name in known or name in {project, "django", "static", "media", "templates"} or importlib.util.find_spec(name):
-            raise ValueError(f"App existente ou nome reservado: {name}. Use outro app; edite models.py para alterar existentes.")
-        if model in {"Meta", "objects", "DoesNotExist", "MultipleObjectsReturned"}:
-            raise ValueError(f"Nome de modelo reservado: {model}")
-        known[name] = app
-    for app in apps:
-        seen = {"id", "pk", "objects"}
-        if not app.get("fields"):
-            raise ValueError("Cada app precisa de fields.")
-        for f in app["fields"]:
-            name = identifier(f["name"])
-            if name in seen or "__" in name or name.endswith("_"):
-                raise ValueError(f"Campo duplicado ou reservado: {name}")
-            seen.add(name)
-            kind = f.get("type")
-            if kind not in TYPES or set(f) - OPTIONS - {"name", "type", "to", "on_delete", "profile"}:
-                raise ValueError(f"Tipo ou opcao desconhecida no campo {name}")
-            if "profile" in f and (kind != "image" or type(f["profile"]) is not bool):
-                raise ValueError("profile aceita true ou false somente em imagens.")
-            if kind in {"fk", "m2m"}:
-                target = f.get("to", "").split(".")
-                if len(target) != 2 or target[0] not in known or target[1] != known[target[0]]["model"]:
-                    raise ValueError(f"Relacao inexistente: {f.get('to')}")
-                if f.get("on_delete", "PROTECT") not in {"CASCADE", "PROTECT", "SET_NULL", "RESTRICT"}:
-                    raise ValueError("on_delete invalido")
-                if f.get("on_delete") == "SET_NULL" and not f.get("null"):
-                    raise ValueError("SET_NULL exige null: true")
-            if kind == "decimal" and not (isinstance(f.get("max_digits"), int) and isinstance(f.get("decimal_places"), int) and 0 <= f["decimal_places"] < f["max_digits"]):
-                raise ValueError("decimal exige max_digits > decimal_places >= 0")
-            if "max_length" in f and (type(f["max_length"]) is not int or f["max_length"] < 1):
-                raise ValueError("max_length deve ser inteiro positivo")
-            for option in {"blank", "null", "unique"} & f.keys():
-                if type(f[option]) is not bool:
-                    raise ValueError(f"{option} deve ser booleano")
-    return project, apps
-
-
 def field_code(f):
     kind = f["type"]
-    opts = {k: v for k, v in f.items() if k in OPTIONS}
+    opts = {k: v for k, v in f.items() if k in MODEL_OPTIONS}
     if kind == "char":
         opts.setdefault("max_length", 150)
     if kind in {"file", "image"}:
@@ -175,18 +114,25 @@ def write_generation(files, hooks, replaceable):
 
 
 def generate(schema, output, dry_run=False):
+    if not isinstance(schema, dict):
+        raise ValueError("O esquema deve ser um objeto JSON com a chave apps.")
     output = Path(output).resolve()
     manifest = output / "crud-genifsp.json"
     previous = json.loads(manifest.read_text(encoding="utf-8")) if manifest.exists() else {}
     integrating = not previous and output.exists() and any(output.iterdir())
-    if integrating:
-        schema = {**schema, "project": existing_project(output)}
     integrated = integrating or previous.get("integrated", False)
-    if integrated and previous:
-        schema = {**schema, "project": previous["project"]}
-    project, apps = validate(schema, previous)
-    all_apps = previous.get("apps", []) + apps
     classroom = integrating or previous.get("layout") == "classroom"
+    if integrating:
+        project = existing_project(output)
+    elif integrated:
+        project = previous["project"]
+    else:
+        project = schema.get("project", "config")
+    generated_targets = {f"{app['name']}.{app['model']}" for app in previous.get("apps", [])}
+    local_targets = local_model_targets(output, project) - generated_targets if classroom else set()
+    apps = validate(schema, previous, project, local_targets)
+    all_apps = previous.get("apps", []) + apps
+    generated_targets.update(f"{app['name']}.{app['model']}" for app in apps)
     legacy_templates = (
         bool(previous) and not integrated
         and (output / "templates/base.html").exists()
@@ -284,7 +230,27 @@ if settings.DEBUG:
         ))
         put(f"{name}/migrations/__init__.py", "")
         put(f"{name}/models.py", "from django.db import models\n\n\n" + f"class {model}(models.Model):\n" + "\n".join(field_code(f) for f in fields) + f"\n\n    def __str__(self):\n        return str(self.{label})\n".replace(f"self.{label}", f"self.{label}" if label else "self.pk"))
-        put(f"{name}/forms.py", f"from django import forms\nfrom .models import {model}\n\nclass {model}Form(forms.ModelForm):\n    class Meta:\n        model = {model}\n        fields = {[f['name'] for f in fields]!r}\n        widgets = {{" + ", ".join(f"{f['name']!r}: forms.DateInput(attrs={{'type': 'date'}})" for f in fields if f['type'] == 'date') + "}\n")
+        widgets = {
+            "date": "forms.DateInput(format='%Y-%m-%d', attrs={'type': 'date'})",
+            "datetime": "forms.DateTimeInput(format='%Y-%m-%dT%H:%M:%S', attrs={'type': 'datetime-local', 'step': 1})",
+        }
+        form_lines = [
+            "from django import forms",
+            f"from .models import {model}",
+            "",
+            "",
+            f"class {model}Form(forms.ModelForm):",
+            "    class Meta:",
+            f"        model = {model}",
+            f"        fields = {[field['name'] for field in fields]!r}",
+        ]
+        widget_lines = [
+            f"            {field['name']!r}: {widgets[field['type']]},"
+            for field in fields if field["type"] in widgets and not field.get("choices")
+        ]
+        if widget_lines:
+            form_lines += ["        widgets = {", *widget_lines, "        }"]
+        put(f"{name}/forms.py", "\n".join(form_lines) + "\n")
         display_fields = tuple(f["name"] for f in fields if f["type"] != "m2m") or ("id",)
         put(f"{name}/admin.py", (
             "from django.contrib import admin\n"
@@ -391,7 +357,7 @@ class {model}Delete(DeleteView):
                 if kind == "image":
                     rendered += f'<img alt="Foto" src="{file_url}">'
                 rendered += "{% endif %}"
-            elif kind == "fk":
+            elif kind == "fk" and field["to"] in generated_targets:
                 target = field["to"].split(".")[0]
                 detail_route = route_name(target, "detail", classroom)
                 link = "{% url '" + detail_route + "' " + value + ".pk %}"
@@ -410,10 +376,13 @@ class {model}Delete(DeleteView):
             ("add.html", f"{model}: cadastro", url("submit_create")),
             ("update.html", f"{model}: edição", url("submit_update", "object.pk")),
         ] if classroom else [("form.html", f"{model}: cadastro", "")]
+        multipart = ' enctype="multipart/form-data"' if any(
+            field["type"] in {"image", "file"} for field in fields
+        ) else ""
         for filename, title, post_url in form_pages:
             action = f' action="{post_url}"' if post_url else ""
             put(f"{directory}/{filename}", page(f'''<h1>{title}</h1>
-<form{action} method="post" enctype="multipart/form-data">
+<form{action} method="post"{multipart}>
     {{% csrf_token %}}
     {{{{ form.as_p }}}}
     <button type="submit">Salvar</button>

@@ -1,7 +1,9 @@
 """Interactive schema entry for the CLI."""
 import json
 
-from .generator import TYPES, identifier
+from .generator import existing_project
+from .integration import local_model_targets
+from .schema import DELETE_POLICIES, NULLABLE_WHEN_BLANK, TYPES, identifier
 
 
 def ask(label, default=None):
@@ -45,6 +47,9 @@ def prompt_schema(output):
         f"{app['name']}.{app['model']}"
         for app in existing.get("apps", []) + apps
     ]
+    if existing.get("layout") == "classroom" or (not existing and (output / "manage.py").is_file()):
+        project = existing.get("project") or existing_project(output)
+        targets += sorted(local_model_targets(output, project) - set(targets))
     for app in apps:
         print(f"\nCampos de {app['model']}")
         count = number("Quantos campos (sem contar o ID automatico)")
@@ -65,7 +70,7 @@ def prompt_schema(output):
             if kind in {"fk", "m2m"}:
                 field["to"] = choose("Modelo relacionado", targets)
                 if kind == "fk":
-                    action = choose("Ao excluir o registro relacionado", ["PROTECT", "CASCADE", "RESTRICT", "SET_NULL"], "PROTECT")
+                    action = choose("Ao excluir o registro relacionado", DELETE_POLICIES, "PROTECT")
                     field["on_delete"] = action
                     if action == "SET_NULL":
                         field.update(null=True, blank=True)
@@ -73,7 +78,7 @@ def prompt_schema(output):
                 optional = choose("Campo opcional", ["s", "n"], "n") == "s"
                 if optional:
                     field["blank"] = True
-                    if kind not in {"char", "text", "email", "url", "image", "file", "m2m", "boolean"}:
+                    if kind in NULLABLE_WHEN_BLANK:
                         field["null"] = True
             app["fields"].append(field)
     return {"project": existing.get("project", "config"), "apps": apps}

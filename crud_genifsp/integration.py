@@ -83,6 +83,45 @@ def has_media_route(tree):
     )
 
 
+def local_model_targets(output, project):
+    """Read the standard local apps without importing the existing project."""
+    settings = output / project / "settings.py"
+    tree = ast.parse(settings.read_bytes(), filename=str(settings))
+    installed = named_assignment(tree, "INSTALLED_APPS", settings).value
+    targets = set()
+    for entry in installed.elts:
+        if not isinstance(entry, ast.Constant) or not isinstance(entry.value, str):
+            continue
+        app = entry.value.split(".", 1)[0]
+        if not app.isidentifier() or (entry.value != app and not entry.value.startswith(f"{app}.apps.")):
+            continue
+        source = output / app / "models.py"
+        if not source.is_file():
+            continue
+        models_tree = ast.parse(source.read_bytes(), filename=str(source))
+        for model in models_tree.body:
+            if not isinstance(model, ast.ClassDef):
+                continue
+            uses_django_model = any(
+                isinstance(base, ast.Attribute) and isinstance(base.value, ast.Name)
+                and base.value.id == "models" and base.attr == "Model"
+                for base in model.bases
+            )
+            abstract = any(
+                isinstance(meta, ast.ClassDef) and meta.name == "Meta"
+                and any(
+                    isinstance(node, ast.Assign)
+                    and any(isinstance(target, ast.Name) and target.id == "abstract" for target in node.targets)
+                    and isinstance(node.value, ast.Constant) and node.value.value is True
+                    for node in meta.body
+                )
+                for meta in model.body
+            )
+            if uses_django_model and not abstract:
+                targets.add(f"{app}.{model.name}")
+    return targets
+
+
 def integration_plan(output, project, apps):
     settings_path = output / project / "settings.py"
     urls_path = output / project / "urls.py"

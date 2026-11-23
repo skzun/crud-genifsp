@@ -1,5 +1,6 @@
 """Small command line interface. Generated projects do not need this package."""
 import argparse
+from importlib.resources import files
 import json
 from pathlib import Path
 import subprocess
@@ -22,6 +23,8 @@ def apply_migrations(schema, output):
 def main():
     parser = argparse.ArgumentParser(description="Gera CRUDs Django editaveis para estudo.")
     sub = parser.add_subparsers(dest="command", required=True)
+    manual = sub.add_parser("manual", help="Mostra ou copia o manual Markdown instalado")
+    manual.add_argument("-o", "--output", type=Path, help="Salva uma copia no caminho informado")
     sample = sub.add_parser("example", help="Escreve o esquema instructors/courses")
     sample.add_argument("path", nargs="?", default="schema.json")
     gen = sub.add_parser("generate", help="Cria projeto ou acrescenta apps ao projeto gerado")
@@ -36,7 +39,15 @@ def main():
     wizard.add_argument("--migrate", action="store_true", help="Cria e aplica as migracoes")
     args = parser.parse_args()
     try:
-        if args.command == "example":
+        if args.command == "manual":
+            guide = files("crud_genifsp").joinpath("MANUAL.md")
+            if args.output is None:
+                sys.stdout.write(guide.read_text(encoding="utf-8"))
+            else:
+                with args.output.open("xb") as f:
+                    f.write(guide.read_bytes())
+                print(f"Manual salvo: {args.output}")
+        elif args.command == "example":
             path = Path(args.path)
             with path.open("x", encoding="utf-8") as f:
                 json.dump(example(), f, indent=2, ensure_ascii=False)

@@ -18,6 +18,38 @@ class GeneratorTests(unittest.TestCase):
                 generate(schema, out)
             self.assertFalse(out.exists())
 
+    def test_incompatible_schema_rejects_before_writes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "project"
+            bad_schemas = [
+                ([], "objeto JSON"),
+                ({"apps": [{"model": "Teacher", "fields": []}]}, "Nome do app"),
+                ({"apps": [{"name": "teachers", "model": "Teacher", "fields": {}}]}, "lista fields"),
+                ({"apps": [{"name": "teachers", "model": "Teacher", "fields": [
+                    {"name": "delete", "type": "char"},
+                ]}]}, "Campo duplicado ou reservado"),
+                ({"apps": [{"name": "teachers", "model": "Teacher", "fields": [
+                    {"name": "name", "type": []},
+                ]}]}, "Tipo desconhecido"),
+                ({"apps": [{"name": "admin", "model": "Subject", "fields": [
+                    {"name": "name", "type": "char"},
+                ]}]}, "nome reservado"),
+            ]
+            bad_fk = example()
+            bad_fk["apps"][1]["fields"].append({"name": "instructor_id", "type": "integer"})
+            bad_schemas.append((bad_fk, "ja e criado pela ForeignKey"))
+            blank_date = example()
+            blank_date["apps"][1]["fields"].append({"name": "start", "type": "date", "blank": True})
+            bad_schemas.append((blank_date, "blank: true exige null: true"))
+            bad_photo = example()
+            bad_photo["apps"][0]["fields"][1]["upload_to"] = "../fotos"
+            bad_schemas.append((bad_photo, "pasta relativa"))
+            for schema, message in bad_schemas:
+                with self.subTest(message=message):
+                    with self.assertRaisesRegex(ValueError, message):
+                        generate(schema, out)
+                    self.assertFalse(out.exists())
+
     def test_no_overwrite_and_dry_run(self):
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / 'project'
@@ -43,9 +75,24 @@ class GeneratorTests(unittest.TestCase):
                 b"'django.contrib.staticfiles',",
                 b"'django.contrib.staticfiles'  # keep the original comment",
             ))
+            plans = out / "plans"
+            plans.mkdir()
+            (plans / "__init__.py").touch()
+            (plans / "models.py").write_text(
+                "from django.db import models\n\nclass Plan(models.Model):\n"
+                "    title = models.CharField(max_length=80)\n",
+                encoding="utf-8",
+            )
+            settings_file.write_bytes(settings_file.read_bytes().replace(
+                b"'django.contrib.staticfiles'  #",
+                b"'plans', 'django.contrib.staticfiles'  #",
+                1,
+            ))
+            schema = example()
+            schema["apps"][1]["fields"].append({"name": "plan", "type": "fk", "to": "plans.Plan"})
             baseline = {path: path.read_bytes() for path in out.rglob("*.py")}
             registered_files = {settings_file, out / "setup/urls.py"}
-            plan = generate(example(), out, dry_run=True)
+            plan = generate(schema, out, dry_run=True)
             self.assertTrue(registered_files.issubset(plan))
             self.assertFalse((out / "instructors").exists())
             for path, contents in baseline.items():
@@ -54,13 +101,13 @@ class GeneratorTests(unittest.TestCase):
             blocked_app = out / "courses"
             blocked_app.write_text("keep", encoding="utf-8")
             with self.assertRaises(ValueError):
-                generate(example(), out)
+                generate(schema, out)
             self.assertEqual(blocked_app.read_text(encoding="utf-8"), "keep")
             self.assertFalse((out / "instructors").exists())
             self.assertFalse((out / "crud-genifsp.json").exists())
             blocked_app.unlink()
 
-            generate(example(), out)
+            generate(schema, out)
             for path, contents in baseline.items():
                 if path not in registered_files:
                     self.assertEqual(path.read_bytes(), contents)
@@ -75,6 +122,9 @@ class GeneratorTests(unittest.TestCase):
             self.assertTrue((out / "instructors/admin.py").is_file())
             self.assertTrue((out / "courses/admin.py").is_file())
             self.assertTrue((out / "courses/templates/courses/update.html").is_file())
+            details = (out / "courses/templates/courses/details.html").read_text(encoding="utf-8")
+            self.assertIn("{{ object.plan }}", details)
+            self.assertNotIn("plans:details", details)
             managed = subprocess.run(
                 [sys.executable, "manage.py", "check"],
                 cwd=out, capture_output=True, text=True,
@@ -85,9 +135,11 @@ from django.contrib import admin
 from django.urls import resolve, reverse
 from instructors.models import Instructor
 from courses.models import Course
+from plans.models import Plan
 
 assert admin.site.is_registered(Instructor)
 assert admin.site.is_registered(Course)
+assert Course._meta.get_field('plan').related_model is Plan
 assert reverse('instructors:instructors') == '/instructors/'
 assert reverse('instructors:details', args=[7]) == '/instructors/details/7'
 assert resolve('/courses/add/addrecord/').func.__name__ == 'addrecord'
@@ -101,14 +153,19 @@ assert reverse('admin:index') == '/admin/'
             self.assertEqual(probed.returncode, 0, probed.stdout + probed.stderr)
             snapshot = {path: path.read_bytes() for path in out.rglob("*.py")}
             with self.assertRaises(ValueError):
-                generate(example(), out)
+                generate(schema, out)
             for path, contents in snapshot.items():
                 self.assertEqual(path.read_bytes(), contents)
 
     def test_installed_package_full_crud_and_extension(self):
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / 'project'
-            generate(example(), out)
+            schema = example()
+            schema["apps"][1]["fields"].append({
+                "name": "substitute", "type": "fk", "to": "instructors.Instructor",
+                "on_delete": "SET_NULL", "blank": True, "null": True,
+            })
+            generate(schema, out)
             def manage(*args):
                 result = subprocess.run([sys.executable, 'manage.py', *args], cwd=out, capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

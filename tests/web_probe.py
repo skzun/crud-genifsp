@@ -57,6 +57,7 @@ get(f'/students/{student.pk}/')
 assert post('/enrollments/new/', {'student': student.pk, 'course': course.pk, 'start': '2026-11-23', 'fee': '99.90', 'active': 'on'}).status_code == 302
 enrollment = Enrollment.objects.get()
 get(f'/enrollments/{enrollment.pk}/')
+assert b'value="2026-11-23"' in get(f'/enrollments/{enrollment.pk}/edit/').content
 assert post(f'/enrollments/{enrollment.pk}/delete/', {}).status_code == 302
 assert post(f'/students/{student.pk}/delete/', {}).status_code == 302
 assert post(f'/courses/{course.pk}/delete/', {}).status_code == 302
